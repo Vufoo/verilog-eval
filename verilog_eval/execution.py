@@ -21,47 +21,39 @@ def clean_up_simulation() -> None:
     subprocess.run("pkill iverilog", shell=True)
     subprocess.run("pkill vvp", shell=True)
 
-def check_correctness(problem: Dict, completion: str, timeout: float,
+def unsafe_execute(problem: Dict, completion: str, timeout: float, result,
                       completion_id: Optional[int] = None, unit_test_length: Optional[int] = None) -> Dict:
-    """
-    Evaluates the functional correctness of a completion by running the test
-    suite provided in the problem. 
-    :param completion_id: an optional completion ID so we can match
-        the results later even if execution finishes asynchronously.
-    """
+    
+    with create_tempdir():
 
-    def unsafe_execute():
+        # These system calls are needed when cleaning up tempdir.
+        import os
+        import shutil
+        rmtree = shutil.rmtree
+        rmdir = os.rmdir
+        chdir = os.chdir
 
-        with create_tempdir():
-
-            # These system calls are needed when cleaning up tempdir.
-            import os
-            import shutil
-            rmtree = shutil.rmtree
-            rmdir = os.rmdir
-            chdir = os.chdir
-
-            # Disable functionalities that can make destructive changes to the test.
+        # Disable functionalities that can make destructive changes to the test.
 # WARNING
 # subprocess.Popen is used to run shell command with calls to iveriog and vvp.
 # Please refer to reliability_guard function for details
-            reliability_guard()
+        reliability_guard()
 
-            # Output testbench with solution to Verilog file in temp directory.
-            verilog_test = problem["test"] + "\n" + \
-                    problem["prompt"] + "\n" + \
-                    completion
+        # Output testbench with solution to Verilog file in temp directory.
+        verilog_test = problem["test"] + "\n" + \
+                problem["prompt"] + "\n" + \
+                completion
 
-                
-            if unit_test_length:
-                keywords = re.findall("repeat\([0-9]*\)", verilog_test)
-                for words in keywords:
-                    verilog_test = verilog_test.replace(words, "repeat({})".format(unit_test_length))
-                    
-            with open("{}.sv".format(problem["task_id"]), 'w') as f:
-                f.write(verilog_test)
             
-            try:
+        if unit_test_length:
+            keywords = re.findall("repeat\([0-9]*\)", verilog_test)
+            for words in keywords:
+                verilog_test = verilog_test.replace(words, "repeat({})".format(unit_test_length))
+                
+        with open("{}.sv".format(problem["task_id"]), 'w') as f:
+            f.write(verilog_test)
+        
+        try:
 # WARNING PLEASE READ
 # The following code use subprocess.Popen to run shell command with calls to iveriog and vvp.
 # Please check that iverilog and vvp are installed and included in your current run path.
@@ -76,55 +68,68 @@ def check_correctness(problem: Dict, completion: str, timeout: float,
 # Once you have read this disclaimer and taken appropriate precautions, 
 # proceed at your own risk:
 # BEGIN CODE BLOCK
-"""
-                with swallow_io():
-                    with time_limit(timeout):
-                        cmd = "iverilog -Wall -Winfloop -Wno-timescale -g2012 \
-                                    -s tb -o test.vvp {}.sv; vvp -n test.vvp".format(problem["task_id"])
-                       
-                        """
-                        adding timeout options for Popen. something breaks if not using timeout. seems to be working for now.
-                        not really sure if its the best/correct way. let me know if anyone has a better solution.
-                        https://stackoverflow.com/questions/1191374/using-module-subprocess-with-timeout
-                        """
-                        p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        timer = Timer(timeout, p.kill)
-                        try:
-                            timer.start()
-                            out, err = p.communicate()
-                        finally:
-                            timer.cancel()
-                            
-                        out, err = out.decode("utf-8"), err.decode("utf-8") 
-                        match = re.search(r'Mismatches: ([0-9]*) in ([0-9]*) samples', out)
-                        if "syntax error" in err:
-                            result.append("failed: syntax error.")
-                        elif len(err) > 0:
-                            result.append("failed: compile error.")
-                        elif match:
-                            cor, tot = [int(i) for i in match.groups()]
-                            if cor == 0:
-                                result.append("passed")
-                            else:
-                                result.append(f"failed: {cor} out of {tot} samples.")
+        
+            with swallow_io():
+                with time_limit(timeout):
+                    cmd = "iverilog -Wall -Winfloop -Wno-timescale -g2012 \
+                                -s tb -o test.vvp {}.sv; vvp -n test.vvp".format(problem["task_id"])
+                    
+                    """
+                    adding timeout options for Popen. something breaks if not using timeout. seems to be working for now.
+                    not really sure if its the best/correct way. let me know if anyone has a better solution.
+                    https://stackoverflow.com/questions/1191374/using-module-subprocess-with-timeout
+                    """
+                    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    timer = Timer(timeout, p.kill)
+                    try:
+                        timer.start()
+                        out, err = p.communicate()
+                    finally:
+                        timer.cancel()
+                        
+                    out, err = out.decode("utf-8"), err.decode("utf-8") 
+                    match = re.search(r'Mismatches: ([0-9]*) in ([0-9]*) samples', out)
+                    if "syntax error" in err:
+                        result.append("failed: syntax error.")
+                    elif len(err) > 0:
+                        result.append("failed: compile error.")
+                    elif match:
+                        cor, tot = [int(i) for i in match.groups()]
+                        if cor == 0:
+                            result.append("passed")
                         else:
-                            result.append("failed: info string not matched.")
-"""
-# END CODE BLOCK
-            except TimeoutException:
-                result.append("timed out")
-            except BaseException as e:
-                result.append(f"failed: {e}")
-
-            # Needed for cleaning up.
-            shutil.rmtree = rmtree
-            os.rmdir = rmdir
-            os.chdir = chdir
+                            result.append(f"failed: {cor} out of {tot} samples.")
+                    else:
+                        result.append("failed: info string not matched.")
             
-    manager = multiprocessing.Manager()
-    result = manager.list()
+        # END CODE BLOCK
+                    
+        except TimeoutException:
+            result.append("timed out")
+        except BaseException as e:
+            result.append(f"failed: {e}")
 
-    p = multiprocessing.Process(target=unsafe_execute)
+        # Needed for cleaning up.
+        shutil.rmtree = rmtree
+        os.rmdir = rmdir
+        os.chdir = chdir
+
+def check_correctness(problem: Dict, completion: str, timeout: float,
+                      completion_id: Optional[int] = None, unit_test_length: Optional[int] = None) -> Dict:
+    """
+    Evaluates the functional correctness of a completion by running the test
+    suite provided in the problem. 
+    :param completion_id: an optional completion ID so we can match
+        the results later even if execution finishes asynchronously.
+    """
+
+    
+    manager = multiprocessing.Manager()
+    result = manager.list()     
+    
+
+    p = multiprocessing.Process(target=unsafe_execute, 
+                                args=(problem, completion, timeout, result, completion_id, unit_test_length))
     p.start()
     p.join(timeout=timeout + 1)
     if p.is_alive():

@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
+import multiprocessing
 import fire
 import sys
 
-from verilog_eval.evaluation import evaluate_functional_correctness
+from evaluation import evaluate_functional_correctness
 
 
 def entry_point(
@@ -25,8 +27,10 @@ def entry_point(
     print(results)
 
 
-def main():
+def main():    
     fire.Fire(entry_point)
 
 
-sys.exit(main())
+if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn')  # Optional, can help on macOS
+    sys.exit(main())
